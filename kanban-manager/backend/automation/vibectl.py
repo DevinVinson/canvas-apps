@@ -11,8 +11,8 @@ without parsing prose.
 
     vibectl.py snapshot
     vibectl.py patch <ticket_id> --status in_progress --title "🐛 Fix login"
-    vibectl.py dispatch --ticket <ticket_id> --prompt-file task.md --title "🎫 Fix login"
-    vibectl.py followup <conversation_id> --prompt-file msg.md
+    vibectl.py dispatch --ticket <ticket_id> --prompt-file task.md --agent-profile <name>
+    vibectl.py followup <conversation_id> --prompt-file msg.md --agent-profile <name>
     vibectl.py profiles
     vibectl.py conversation <conversation_id>
 """
@@ -170,9 +170,12 @@ def build_parser() -> argparse.ArgumentParser:
     dispatch.add_argument("--prompt")
     dispatch.add_argument("--prompt-file")
     dispatch.add_argument("--title")
-    dispatch.add_argument("--profile", help="LLM profile name")
-    dispatch.add_argument("--ticket", help="ticket this worker is for; the model "
-                                           "requested on it overrides --profile")
+    dispatch.add_argument(
+        "--agent-profile", "--profile", dest="profile", metavar="NAME",
+        help="agent profile name from the live `profiles` command",
+    )
+    dispatch.add_argument("--ticket", help="ticket this worker is for; its explicit "
+                                           "profile overrides --agent-profile")
     dispatch.add_argument("--role", default="worker", choices=["worker", "manager"])
     dispatch.add_argument("--no-worktree", action="store_true",
                           help="run in the checkout instead of an isolation worktree")
@@ -182,12 +185,15 @@ def build_parser() -> argparse.ArgumentParser:
     followup.add_argument("conversation_id")
     followup.add_argument("--prompt")
     followup.add_argument("--prompt-file")
-    followup.add_argument("--profile", help="switch the conversation to this profile")
-    followup.add_argument("--ticket", help="ticket this conversation is for; the model "
-                                           "requested on it overrides --profile")
+    followup.add_argument(
+        "--agent-profile", "--profile", dest="profile", metavar="NAME",
+        help="switch to an agent profile from the live `profiles` command",
+    )
+    followup.add_argument("--ticket", help="ticket this conversation is for; its explicit "
+                                           "profile overrides --agent-profile")
     followup.set_defaults(func=cmd_followup)
 
-    sub.add_parser("profiles", help="list LLM profiles").set_defaults(func=cmd_profiles)
+    sub.add_parser("profiles", help="list available agent profiles").set_defaults(func=cmd_profiles)
 
     conv = sub.add_parser("conversation", help="inspect a conversation")
     conv.add_argument("conversation_id")
