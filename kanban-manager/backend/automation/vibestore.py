@@ -463,12 +463,42 @@ def llm_profiles() -> dict:
 
 
 def profile_catalog(data: dict) -> dict:
-    """Expose only discovery metadata, never credentials or full LLM configs."""
+    """Expose only LLM discovery metadata, never credentials or full configs."""
     return {
         "profiles": [{"name": p.get("name"), "model": p.get("model")}
                      for p in (data.get("profiles") or [])],
         "active_profile": data.get("active_profile"),
     }
+
+
+def agent_profiles() -> dict:
+    """Available launch-time agent profiles, without materialized settings."""
+    if sidecar_root():
+        return sidecar_request("/api/manager/agent-profiles")
+    try:
+        data = agent_request("/api/agent-profiles", timeout=15)
+    except (urllib.error.URLError, OSError, json.JSONDecodeError):
+        return {"profiles": [], "active_agent_profile_id": None}
+    return agent_profile_catalog(data)
+
+
+def agent_profile_catalog(data: dict) -> dict:
+    """Expose stable agent-profile identity and non-secret discovery metadata."""
+    fields = ("id", "name", "agent_kind", "revision", "llm_profile_ref", "mcp_server_refs")
+    return {
+        "profiles": [{key: profile.get(key) for key in fields}
+                     for profile in (data.get("profiles") or [])],
+        "active_agent_profile_id": data.get("active_agent_profile_id"),
+    }
+
+
+def resolve_agent_profile_id(name: str) -> str:
+    profiles = agent_profiles().get("profiles") or []
+    profile = next((item for item in profiles if item.get("name") == name), None)
+    if not profile or not profile.get("id"):
+        names = [item.get("name") for item in profiles if item.get("name")]
+        raise ValueError(f"unknown agent profile {name!r}; available: {names}")
+    return profile["id"]
 
 
 def agent_settings_payload(llm_profile: str | None = None) -> dict:
@@ -637,6 +667,7 @@ def start_conversation(
     *,
     title: str | None = None,
     llm_profile: str | None = None,
+    agent_profile: str | None = None,
     conversation_id: str | None = None,
     role: str = "worker",
     worktree: bool = True,
@@ -646,15 +677,26 @@ def start_conversation(
 ) -> dict:
     """Start a worker/manager conversation, or follow up on an existing one.
 
-    A ticket's own model selection wins over `llm_profile`: what the user
-    picked on the request is what the worker runs on.
+    Agent profiles select which agent launches a new conversation. LLM profiles
+    select the model for the default OpenHands agent and can switch an existing
+    conversation. A ticket's explicit LLM choice wins over either CLI choice.
     """
+    if conversation_id and agent_profile:
+        raise ValueError("agent profiles are launch-only and cannot change on follow-up; use --llm-profile to switch an existing conversation's model")
+
+    ticket_profile = ticket_llm_profile(ws_id, ticket_id)
+    if ticket_profile:
+        llm_profile = ticket_profile
+        agent_profile = None
+    elif agent_profile and llm_profile:
+        raise ValueError("choose an agent profile or an LLM profile, not both")
+    agent_profile_id = resolve_agent_profile_id(agent_profile) if agent_profile else None
+
     if sidecar_root():
         return sidecar_request("/api/manager/conversations", "POST", dict(
             working_dir=working_dir, prompt=prompt, title=title, llm_profile=llm_profile,
-            conversation_id=conversation_id, role=role, worktree=worktree,
-            max_iterations=max_iterations, ticket_id=ticket_id))
-    llm_profile = ticket_llm_profile(ws_id, ticket_id) or llm_profile
+            agent_profile_id=agent_profile_id, conversation_id=conversation_id, role=role,
+            worktree=worktree, max_iterations=max_iterations, ticket_id=ticket_id))
     if conversation_id:
         if llm_profile:
             agent_request(
@@ -673,10 +715,10 @@ def start_conversation(
         }
 
     conv_id = str(uuid.uuid4())
-    # Resolve settings (and validate llm_profile) BEFORE provisioning the
-    # worktree, so an unknown profile never leaks one.
+    # Resolve profiles BEFORE provisioning the worktree so an unknown choice
+    # never leaks one. Agent profiles resolve server-side from their stable id.
     prompt = manager_skill_prompt(prompt, role)
-    settings = agent_settings_payload(llm_profile)
+    settings = None if agent_profile_id else agent_settings_payload(llm_profile)
 
     wt = None
     if worktree:
@@ -690,13 +732,16 @@ def start_conversation(
         # `true` here would rewrite working_dir to the worktree path.
         "worktree": False,
         "conversation_id": conv_id,
-        "agent_settings": settings,
-        "secrets_encrypted": True,
         "initial_message": {"role": "user", "content": [{"text": prompt}], "run": True},
         "max_iterations": max_iterations,
         "autotitle": not title,
         "tags": {"workspace": working_dir, "viberole": role},
     }
+    if agent_profile_id:
+        body["agent_profile_id"] = agent_profile_id
+    else:
+        body["agent_settings"] = settings
+        body["secrets_encrypted"] = True
     try:
         created = agent_request("/api/conversations", "POST", body, timeout=120)
     except Exception:

@@ -202,6 +202,10 @@ class SidecarTest(unittest.TestCase):
             board = rpc(self.data, {'path': '/api/workspaces/abc123/board'})['body']
             self.assertEqual(len(board['tickets'][0]['entries']), 13)
             self.assertEqual(board['tickets'][0]['status'], 'pending')
+            profiles = rpc(self.data, {'path': '/api/manager/agent-profiles'})
+            self.assertEqual(profiles['status'], 200)
+            self.assertIsInstance(profiles['body']['profiles'], list)
+            self.assertIn('active_agent_profile_id', profiles['body'])
             with self.assertRaises(ValueError):
                 rpc(self.data, {'path': '/api/manager/agent-credentials'})
             with self.assertRaises(ValueError):

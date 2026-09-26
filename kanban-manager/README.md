@@ -69,10 +69,12 @@ sidecar's bearer token. Empty integrations still permit manual board use.
 
 ### Instance-local manager skill
 
-The generic manager discovers configured profiles using `vibectl.py profiles`,
-then weighs capability, cost and task effort. Explicit user choices win. Without
-an informed alternative, new workers use the Agent Server's active default;
-follow-ups keep their current model. The App imposes no provider or model list.
+The generic manager discovers LLM choices with `vibectl.py llm-profiles`
+(`profiles` is its legacy alias) and launch-time agent choices with
+`vibectl.py agent-profiles`. `--llm-profile` (legacy `--profile`) selects an LLM
+and can switch a follow-up; `--agent-profile` resolves a live name to
+`agent_profile_id` for a new conversation only. Explicit ticket LLM choices win.
+The App imposes no provider, model or agent list.
 
 An operator can put local model preferences and deployment conventions in
 `~/.openhands/apps/kanban-manager/skills/manager/SKILL.md` (under the configured

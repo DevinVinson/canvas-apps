@@ -470,12 +470,11 @@ def conv_statuses(tickets: list[dict]) -> dict[str, str]:
 # ------------------------------------------------------------- manager kickoff
 
 def model_selection_instructions() -> str:
-    """Manager-prompt policy for choosing worker agent profiles."""
-    return f"""## Model selection for workers
-Run `{VIBECTL} profiles` at the start of each run to discover the owning Agent Server's available profiles, their models, and the active profile. Choose from that LIVE list; never invent a profile name or assume a provider is available. Use the instance-local manager skill, if supplied, for local preferences, not as a substitute for discovery.
-Match capability, cost and task effort: high effort for architecture, tricky debugging, large refactors or vague requirements; medium effort for routine features and bug fixes; low effort for trivial chores, copy, docs and one-liners. Use the reported model and any local guidance to judge suitability; do not infer capability solely from an unfamiliar profile alias. Pass the exact available name with `--agent-profile`; `--profile` remains a backward-compatible alias. If discovery is unavailable, empty, or offers no basis for a better choice, omit the profile flag to use the server's active default for a new worker (or retain an existing worker's model on follow-up). Do not guess or silently substitute for an explicit user choice.
-Passing `--agent-profile` to a follow-up switches that EXISTING conversation's model first — reassess the available profiles when escalating a stuck worker.
-**The user's choice wins**: a ticket with a non-null `requested_model` runs on that profile, and passing `--ticket <ticket_id>` applies it for you — your `--agent-profile` is ignored for that ticket. A null `requested_model` is "manager's choice". Also honor explicit model instructions in user entries; if the requested model cannot be resolved to an available profile, ask the user instead of substituting. Each ticket also carries `budget_usd`, the spend cap its worker gets; a worker that hits it is paused automatically and its card is moved to needs_input, so do not restart it without a new instruction from the user."""
+    """Manager-prompt policy for distinct worker agent and LLM profiles."""
+    return f"""## Profile selection for workers
+LLM profiles control the model used by the default OpenHands agent. Run `{VIBECTL} llm-profiles` at the start of each run to discover the owning Agent Server's LIVE LLM names, models and active profile. Match capability, cost and task effort: high effort for architecture, tricky debugging, large refactors or vague requirements; medium effort for routine features and bug fixes; low effort for trivial chores, copy, docs and one-liners. Pass the exact available name with `--llm-profile`; `--profile` remains its backward-compatible alias. Passing `--llm-profile` on a follow-up switches that EXISTING conversation's LLM first.
+Agent profiles control which agent implementation launches a NEW conversation. Run `{VIBECTL} agent-profiles` to discover their LIVE names and kinds, then pass an exact name with `--agent-profile`. Agent profiles are launch-only: never pass `--agent-profile` to a follow-up. Do not pass agent and LLM profile options together. If discovery is unavailable, empty, or offers no basis for a better choice, omit both flags to preserve existing defaults. Never invent a profile name or infer capability solely from an unfamiliar alias. Use the instance-local manager skill, if supplied, for local preferences, not as a substitute for discovery.
+**The user's choice wins**: a ticket with a non-null `requested_model` runs on that LLM profile, and passing `--ticket <ticket_id>` applies it for you — it overrides either profile option. A null `requested_model` is "manager's choice". Also honor explicit model instructions in user entries; if the requested model cannot be resolved to an available LLM profile, ask the user instead of substituting. Each ticket also carries `budget_usd`, the spend cap its worker gets; a worker that hits it is paused automatically and its card is moved to needs_input, so do not restart it without a new instruction from the user."""
 
 
 def build_manager_prompt(ws: dict, tickets: list[dict]) -> str:
@@ -559,11 +558,11 @@ Every command prints JSON. A non-zero exit means it failed — read the `error` 
 
 Worker dispatch — workers ALWAYS work in a git worktree, never in the main checkout. The worktree is provisioned for you, its path is appended to the worker's prompt, and the conversation is filed under the right workspace in the UI.
 
-- **Start a worker**: `{VIBECTL} dispatch --ticket <ticket_id> --prompt-file <file> --title "🎫 <short summary>" [--agent-profile <name>]`
+- **Start a worker**: `{VIBECTL} dispatch --ticket <ticket_id> --prompt-file <file> --title "🎫 <short summary>" [--llm-profile <name> | --agent-profile <name>]`
   Write the task prompt to a file first (heredoc or the file editor) — do NOT try to pass a long multi-line prompt as a shell argument.
-  ALWAYS pass `--ticket`: it applies the model the user requested on that ticket (see Model selection).
+  ALWAYS pass `--ticket`: it applies the model the user requested on that ticket (see Profile selection).
   Prints `{{"id": "<conversation_id>", ...}}` — immediately patch that id onto the ticket along with `--status in_progress`.
-- **Follow up on an existing conversation**: `{VIBECTL} followup <conv_id> --ticket <ticket_id> --prompt-file <file> [--agent-profile <name>]`
+- **Follow up on an existing conversation**: `{VIBECTL} followup <conv_id> --ticket <ticket_id> --prompt-file <file> [--llm-profile <name>]`
 - **Inspect a conversation**: `{VIBECTL} conversation <conv_id> [--final-response]`
   Prints `execution_status` (running|idle|finished|error|stuck|paused), the model, and optionally the worker's final report.
 

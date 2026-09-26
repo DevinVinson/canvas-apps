@@ -611,9 +611,12 @@ class StartConversation(BaseModel):
     role: str = "worker"  # worker | manager — recorded in conversation tags
     tags: dict[str, str] | None = None
     # Agent-server LLM profile name (GET /api/manager/llm-profiles). On create
-    # the conversation starts on that model; on follow-up the conversation is
-    # switched to it first. None = the server's active default profile.
+    # the default OpenHands agent starts on that model; on follow-up the existing
+    # conversation switches to it first. None preserves current behavior.
     llm_profile: str | None = None
+    # Stable id from GET /api/manager/agent-profiles. Agent profiles select the
+    # agent only when launching a new conversation and cannot change on follow-up.
+    agent_profile_id: str | None = None
     # Ticket this conversation works on. Its request settings win over what the
     # manager picked: a user who chose a model gets that model.
     ticket_id: str | None = None
@@ -1134,6 +1137,25 @@ def manager_llm_profiles():
     return _llm_profiles()
 
 
+def _agent_profiles() -> dict:
+    """Launch-time agent profiles on the Agent Server (no materialized settings)."""
+    if not AGENT_SERVER or not SESSION_KEY:
+        return {"profiles": [], "active_agent_profile_id": None}
+    r = httpx.get(
+        f"{AGENT_SERVER}/api/agent-profiles",
+        headers={"X-Session-API-Key": SESSION_KEY},
+        timeout=15,
+    )
+    r.raise_for_status()
+    return vibestore.agent_profile_catalog(r.json())
+
+
+@app.get("/api/manager/agent-profiles")
+def manager_agent_profiles():
+    """Agent choices for new conversations, keyed by stable profile id."""
+    return _agent_profiles()
+
+
 @app.get('/api/manager/conversations/{conv_id}')
 def conversation(conv_id: str, final_response: bool = False):
     data = agent_get(f'/api/conversations/{conv_id}?include_skills=false', timeout=30)
@@ -1338,7 +1360,24 @@ def manager_start_conversation(req: StartConversation):
         raise HTTPException(409, "Configure Agent Server URL and server-side credentials in Backend setup")
     headers = {"X-Session-API-Key": SESSION_KEY, "Content-Type": "application/json"}
     prompt = req.prompt
-    llm_profile = ticket_llm_profile(req.ticket_id) or req.llm_profile
+    if req.conversation_id and req.agent_profile_id:
+        raise HTTPException(
+            400,
+            "agent profiles are launch-only and cannot change on follow-up; "
+            "use llm_profile to switch an existing conversation's model",
+        )
+    ticket_profile = ticket_llm_profile(req.ticket_id)
+    llm_profile = ticket_profile or req.llm_profile
+    agent_profile_id = None if ticket_profile else req.agent_profile_id
+    if agent_profile_id and llm_profile:
+        raise HTTPException(400, "choose an agent profile or an LLM profile, not both")
+    if agent_profile_id:
+        profiles = _agent_profiles().get("profiles") or []
+        if agent_profile_id not in {profile.get("id") for profile in profiles}:
+            names = [profile.get("name") for profile in profiles if profile.get("name")]
+            raise HTTPException(
+                400, f"unknown agent_profile_id {agent_profile_id!r}; available: {names}"
+            )
     with httpx.Client(timeout=120) as client:
         if req.conversation_id:
             if llm_profile:
@@ -1371,10 +1410,10 @@ def manager_start_conversation(req: StartConversation):
         # worktrees are provisioned here (see _provision_worker_worktree)
         # instead of via `worktree: true`, which would rewrite working_dir.
         conv_id = str(uuid.uuid4())
-        # Resolve settings (and validate llm_profile — 400s on an unknown
-        # name) BEFORE provisioning the worktree so we never leak one.
+        # Resolve profile choices before provisioning the worktree so an
+        # unknown selection never leaks one. Agent profiles resolve server-side.
         prompt = vibestore.manager_skill_prompt(prompt, req.role)
-        agent_settings = _agent_settings_payload(llm_profile)
+        agent_settings = None if agent_profile_id else _agent_settings_payload(llm_profile)
         if req.worktree:
             wt = _provision_worker_worktree(req.working_dir, conv_id)
             prompt += _worktree_guidance(req.working_dir, wt)
@@ -1389,13 +1428,16 @@ def manager_start_conversation(req: StartConversation):
             "workspace": {"kind": "LocalWorkspace", "working_dir": req.working_dir},
             "worktree": False,
             "conversation_id": conv_id,
-            "agent_settings": agent_settings,
-            "secrets_encrypted": True,
             "initial_message": {"role": "user", "content": [{"text": prompt}], "run": True},
             "max_iterations": req.max_iterations,
             "autotitle": not req.title,
             "tags": tags,
         }
+        if agent_profile_id:
+            body["agent_profile_id"] = agent_profile_id
+        else:
+            body["agent_settings"] = agent_settings
+            body["secrets_encrypted"] = True
         try:
             r = client.post(f"{AGENT_SERVER}/api/conversations", headers=headers, json=body)
             r.raise_for_status()
@@ -1405,7 +1447,8 @@ def manager_start_conversation(req: StartConversation):
                 _git(Path(req.working_dir), "branch", "-D", wt["branch"])
             raise
         conv_id = r.json()["id"]
-        _prime_model_cache(conv_id, (agent_settings.get("llm") or {}).get("model"))
+        if agent_settings:
+            _prime_model_cache(conv_id, (agent_settings.get("llm") or {}).get("model"))
         if req.role == "manager":
             with db() as conn:
                 conn.execute(

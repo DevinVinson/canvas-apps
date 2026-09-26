@@ -12,8 +12,10 @@ without parsing prose.
     vibectl.py snapshot
     vibectl.py patch <ticket_id> --status in_progress --title "🐛 Fix login"
     vibectl.py dispatch --ticket <ticket_id> --prompt-file task.md --agent-profile <name>
-    vibectl.py followup <conversation_id> --prompt-file msg.md --agent-profile <name>
-    vibectl.py profiles
+    vibectl.py dispatch --ticket <ticket_id> --prompt-file task.md --llm-profile <name>
+    vibectl.py followup <conversation_id> --prompt-file msg.md --llm-profile <name>
+    vibectl.py agent-profiles
+    vibectl.py llm-profiles
     vibectl.py conversation <conversation_id>
 """
 
@@ -97,7 +99,8 @@ def cmd_dispatch(args) -> int:
         args.working_dir,
         _read_prompt(args),
         title=args.title,
-        llm_profile=args.profile,
+        llm_profile=args.llm_profile,
+        agent_profile=args.agent_profile,
         role=args.role,
         worktree=not args.no_worktree,
         ws_id=args.workspace_id,
@@ -109,15 +112,20 @@ def cmd_followup(args) -> int:
     return _out(vibestore.start_conversation(
         args.working_dir,
         _read_prompt(args),
-        llm_profile=args.profile,
+        llm_profile=args.llm_profile,
+        agent_profile=args.agent_profile,
         conversation_id=args.conversation_id,
         ws_id=args.workspace_id,
         ticket_id=args.ticket,
     ))
 
 
-def cmd_profiles(args) -> int:
+def cmd_llm_profiles(args) -> int:
     return _out(vibestore.llm_profiles())
+
+
+def cmd_agent_profiles(args) -> int:
+    return _out(vibestore.agent_profiles())
 
 
 def cmd_conversation(args) -> int:
@@ -171,11 +179,15 @@ def build_parser() -> argparse.ArgumentParser:
     dispatch.add_argument("--prompt-file")
     dispatch.add_argument("--title")
     dispatch.add_argument(
-        "--agent-profile", "--profile", dest="profile", metavar="NAME",
-        help="agent profile name from the live `profiles` command",
+        "--agent-profile", metavar="NAME",
+        help="launch-time agent name from the live `agent-profiles` command",
+    )
+    dispatch.add_argument(
+        "--llm-profile", "--profile", dest="llm_profile", metavar="NAME",
+        help="LLM name from `llm-profiles`; --profile is the legacy alias",
     )
     dispatch.add_argument("--ticket", help="ticket this worker is for; its explicit "
-                                           "profile overrides --agent-profile")
+                                           "LLM profile overrides either profile option")
     dispatch.add_argument("--role", default="worker", choices=["worker", "manager"])
     dispatch.add_argument("--no-worktree", action="store_true",
                           help="run in the checkout instead of an isolation worktree")
@@ -186,14 +198,22 @@ def build_parser() -> argparse.ArgumentParser:
     followup.add_argument("--prompt")
     followup.add_argument("--prompt-file")
     followup.add_argument(
-        "--agent-profile", "--profile", dest="profile", metavar="NAME",
-        help="switch to an agent profile from the live `profiles` command",
+        "--agent-profile", metavar="NAME",
+        help="launch-only; rejected for existing conversations",
+    )
+    followup.add_argument(
+        "--llm-profile", "--profile", dest="llm_profile", metavar="NAME",
+        help="switch the existing conversation's LLM; --profile is the legacy alias",
     )
     followup.add_argument("--ticket", help="ticket this conversation is for; its explicit "
-                                           "profile overrides --agent-profile")
+                                           "LLM profile overrides --llm-profile")
     followup.set_defaults(func=cmd_followup)
 
-    sub.add_parser("profiles", help="list available agent profiles").set_defaults(func=cmd_profiles)
+    sub.add_parser("agent-profiles", help="list launch-time agent profiles").set_defaults(
+        func=cmd_agent_profiles)
+    sub.add_parser("llm-profiles", help="list LLM profiles").set_defaults(func=cmd_llm_profiles)
+    sub.add_parser("profiles", help="legacy alias for llm-profiles").set_defaults(
+        func=cmd_llm_profiles)
 
     conv = sub.add_parser("conversation", help="inspect a conversation")
     conv.add_argument("conversation_id")
