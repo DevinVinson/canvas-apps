@@ -1393,7 +1393,7 @@ function renderPricing(state, nodes, navigate) {
       row.append(
         el("td", "", model),
         el("td", "", ""),
-        el("td", "", entry ? (entry.modelId === model ? "Exact" : "Partial") : "No match")
+        el("td", "", entry ? (model === `${entry.providerId}/${entry.modelId}` || model === entry.modelId ? "Exact" : "Partial") : "No match")
       );
       if (entry) {
         row.children[1].append(el("span", "usage-insights__badge usage-insights__badge--catalog", "Catalog estimate"));
