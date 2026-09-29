@@ -300,6 +300,26 @@ async function fetchPaginated(host, basePath, disposed, maxItems, onProgress) {
   return { items, truncated: pages >= maxPages || items.length >= maxItems };
 }
 
+async function fetchEventsFromCursor(host, basePath, disposed, maxItems, startPageId) {
+  const items = [];
+  let pageId = startPageId ?? null;
+  let pages = 0;
+  const maxPages = Math.ceil(maxItems / 100) + 1;
+  do {
+    const params = new URLSearchParams({ limit: "100" });
+    if (pageId) params.set("page_id", pageId);
+    const response = await host.agentServer.request({ path: `${basePath}?${params}` });
+    if (disposed()) return { items, nextPageId: pageId };
+    const page = normalizePage(response, "Event search");
+    items.push(...page.items);
+    pages++;
+    if (page.nextPageId === pageId) break;
+    pageId = page.nextPageId;
+    if (items.length >= maxItems) return { items: items.slice(0, maxItems), nextPageId: pageId };
+  } while (pageId && pages < maxPages);
+  return { items, nextPageId: pageId };
+}
+
 // ─── Stats normalization ───────────────────────────────────────────────────
 
 function extractUsageMetrics(value) {
@@ -383,12 +403,12 @@ function sortSamples(samples) {
 
 // ─── Delta calculation ─────────────────────────────────────────────────────
 
-function computeDeltas(samples) {
-  const sorted = sortSamples(dedupeSamples(samples));
-  const byKey = new Map();
+const SAMPLE_KEY = (s) => `${s.conversationId}::${s.usageKey}::${s.modelName ?? ""}`;
+
+function computeDeltasFromSorted(sorted, byKey) {
   const deltas = [];
   for (const s of sorted) {
-    const key = `${s.conversationId}::${s.usageKey}::${s.modelName ?? ""}`;
+    const key = SAMPLE_KEY(s);
     const prev = byKey.get(key);
     if (prev) {
       const d = {
@@ -414,6 +434,33 @@ function computeDeltas(samples) {
     byKey.set(key, s);
   }
   return deltas;
+}
+
+function computeDeltas(samples) {
+  const sorted = sortSamples(dedupeSamples(samples));
+  return computeDeltasFromSorted(sorted, new Map());
+}
+
+function buildLastByKey(samples) {
+  const sorted = sortSamples(dedupeSamples(samples));
+  const byKey = new Map();
+  for (const s of sorted) byKey.set(SAMPLE_KEY(s), s);
+  return byKey;
+}
+
+function computeDeltasIncremental(newSamples, byKey) {
+  const sorted = sortSamples(dedupeSamples(newSamples));
+  return computeDeltasFromSorted(sorted, byKey);
+}
+
+function groupDeltasByConversation(deltas) {
+  const map = new Map();
+  for (const d of deltas) {
+    const arr = map.get(d.conversationId);
+    if (arr) arr.push(d);
+    else map.set(d.conversationId, [d]);
+  }
+  return map;
 }
 
 // ─── Current totals ───────────────────────────────────────────────────────
@@ -898,9 +945,10 @@ function renderOverview(state, nodes, navigate) {
   shell.append(toolbar);
 
   // Aggregate deltas with filters
+  const convMap = new Map(state.conversations.map((c) => [c.id, c]));
   const filteredDeltas = state.allDeltas.filter((d) => {
     if (state.modelFilter !== "all" && (d.modelName ?? "unknown") !== state.modelFilter) return false;
-    const conv = state.conversations.find((c) => c.id === d.conversationId);
+    const conv = convMap.get(d.conversationId);
     if (conv && state.statusFilter !== "all" && conv.status !== state.statusFilter) return false;
     return true;
   });
@@ -1045,8 +1093,10 @@ function renderOverview(state, nodes, navigate) {
     return true;
   });
 
+  const deltaByConv = groupDeltasByConversation(state.allDeltas);
+
   for (const conv of filteredConversations) {
-    const convDeltas = state.allDeltas.filter((d) => d.conversationId === conv.id && !d.isBaseline);
+    const convDeltas = (deltaByConv.get(conv.id) ?? []).filter((d) => !d.isBaseline);
     const convAgg = aggregateDeltas(convDeltas, state.period);
     const row = el("tr");
     const titleCell = el("td");
@@ -1521,6 +1571,8 @@ function mountUsage(host, { container, path, navigate }) {
 
       state.allSamples = allSamples;
       state.allDeltas = computeDeltas(allSamples);
+      state._deltaByKey = buildLastByKey(allSamples);
+      state._pollCursors = new Map();
 
       // Cache samples
       await cacheSamples(db, allSamples);
@@ -1548,33 +1600,34 @@ function mountUsage(host, { container, path, navigate }) {
     if (disposed) return;
     const active = state.conversations.filter((c) => c.status === "running" || c.status === "idle");
     if (active.length === 0) return;
+    const byKey = state._deltaByKey;
+    const cursors = state._pollCursors ?? new Map();
 
-    // Refresh active conversations' events
     for (const conv of active) {
       if (disposed) return;
       try {
-        const evResult = await fetchPaginated(
-          host,
-          `/api/conversations/${encodeURIComponent(conv.id)}/events/search`,
-          isDisposed,
-          MAX_EVENTS_PER_CONVERSATION
-        );
+        const basePath = `/api/conversations/${encodeURIComponent(conv.id)}/events/search`;
+        const cursor = cursors.get(conv.id);
+        const evResult = await fetchEventsFromCursor(host, basePath, isDisposed, MAX_EVENTS_PER_CONVERSATION, cursor);
         if (disposed) return;
+
+        // Update cursor for next poll — falls back to null to resume from start
+        cursors.set(conv.id, evResult.nextPageId);
+
         const statsEvents = evResult.items.filter(isStatsEvent);
         const samples = [];
         for (const ev of statsEvents) samples.push(...normalizeSample(ev, conv.id));
 
-        // Merge new samples
         const existingIds = new Set(state.allSamples.map((s) => s.id));
         const newSamples = samples.filter((s) => !existingIds.has(s.id));
         if (newSamples.length > 0) {
           state.allSamples = [...state.allSamples, ...newSamples];
-          state.allDeltas = computeDeltas(state.allSamples);
+          state.allDeltas = [...state.allDeltas, ...computeDeltasIncremental(newSamples, byKey)];
           await cacheSamples(db, newSamples);
           paint();
         }
       } catch {
-        // Ignore polling errors
+        // Ignore polling errors — cursor may be stale on next cycle
       }
     }
   }, POLL_INTERVAL_MS);
