@@ -2,7 +2,8 @@
 import { describe, expect, it, vi } from "vitest";
 import { activate } from "./extension.js";
 
-function setup({ enabled = true, user = "User memory", project = "Project memory", userDaily = null, projectDaily = null, extra = null, error } = {}) {
+function setup({ enabled = true, user = "User memory", project = "Project memory", userDaily = null, projectDaily = null, extra = null, userError, projectError, dailyFiles } = {}) {
+  const value = (entry) => typeof entry === "function" ? entry() : entry;
   let mount;
   const unregister = vi.fn();
   const request = vi.fn(async ({ path, body }) => {
@@ -12,7 +13,7 @@ function setup({ enabled = true, user = "User memory", project = "Project memory
     if (path.startsWith("/api/conversations/search")) return { items: [{ workspace: { working_dir: "/workspace/project", kind: "LocalWorkspace" } }], next_page_id: null };
     if (path === "/api/bash/execute_bash_command") {
       if (body?.command?.includes("os.listdir")) {
-        return { stdout: JSON.stringify({
+        return { stdout: JSON.stringify(dailyFiles || {
           "/home/agent/.openhands/memory": userDaily === null ? [] : ["2026-10-06.md", "ignore.txt"],
           "/workspace/project/.openhands/memory": projectDaily === null ? [] : ["2026-10-06.md"],
         }) };
@@ -20,9 +21,9 @@ function setup({ enabled = true, user = "User memory", project = "Project memory
       return { stdout: body?.command === "pwd" ? "/workspace/agent-server\n" : "{}" };
     }
     if (path.includes("%2Fhome%2Fagent%2F.openhands%2Fmemory%2FMEMORY.md")) {
-      if (error) throw new Error(error);
+      if (userError) throw new Error(userError);
       if (user === null) throw new Error("404 Not Found");
-      return { content: user, modified_at: "2026-10-06T12:00:00Z" };
+      return { content: value(user), modified_at: "2026-10-06T12:00:00Z" };
     }
     if (path.includes("%2Fhome%2Fagent%2F.openhands%2Fmemory%2F2026-10-06.md")) {
       if (userDaily === null) throw new Error("404 Not Found");
@@ -30,8 +31,9 @@ function setup({ enabled = true, user = "User memory", project = "Project memory
     }
 
     if (path.includes("%2Fworkspace%2Fproject%2F.openhands%2Fmemory%2FMEMORY.md")) {
+      if (projectError) throw new Error(projectError);
       if (project === null) throw new Error("404 Not Found");
-      return { content: project, last_modified: "2026-10-05T12:00:00Z" };
+      return { content: value(project), last_modified: "2026-10-05T12:00:00Z" };
     }
     if (path.includes("%2Fworkspace%2Fproject%2F.openhands%2Fmemory%2F2026-10-06.md")) {
       if (projectDaily === null) throw new Error("404 Not Found");
@@ -102,6 +104,18 @@ describe("Agent Memory viewer", () => {
     cleanup();
   });
 
+  it("keeps readable daily note results when another memory directory is inaccessible", async () => {
+    const { container, request, cleanup } = await mount({
+      userDaily: "Readable user daily note",
+      dailyFiles: { "/home/agent/.openhands/memory": ["2026-10-06.md"], "/workspace/project/.openhands/memory": [] },
+    });
+    expect(container.textContent).toContain("Readable user daily note");
+    const listProbe = request.mock.calls.map(([call]) => call).find((call) => call.body?.command?.includes("os.listdir"));
+    expect(listProbe.body.command).toContain("except OSError");
+    cleanup();
+  });
+
+
 
   it("starts collapsed and expands each entry when its header is clicked", async () => {
     const { container, cleanup } = await mount({ user: "User entry", project: "Project entry" });
@@ -127,10 +141,31 @@ describe("Agent Memory viewer", () => {
     cleanup();
   });
 
+  it("refreshes with a cache-busted file request", async () => {
+    let user = "Original memory";
+    const { container, request, cleanup } = await mount({ user: () => user });
+    user = "Updated memory";
+    container.querySelector("button").click();
+    await vi.waitFor(() => expect(container.textContent).toContain("Updated memory"));
+    const downloads = request.mock.calls.map(([call]) => call).filter((call) => call.path.startsWith("/api/file/download"));
+    expect(downloads).toHaveLength(4);
+    expect(downloads[0].path).toMatch(/&_=/);
+    expect(downloads[0].headers).toEqual({ "Cache-Control": "no-cache" });
+    cleanup();
+  });
+
+  it("keeps readable entries and renders a failed source safely", async () => {
+    const { container, cleanup } = await mount({ user: "User entry", projectError: "Access denied" });
+    expect(container.textContent).toContain("User entry");
+    expect(container.textContent).toContain("Could not read /workspace/project/.openhands/memory/MEMORY.md");
+    expect(container.textContent).toContain("Access denied");
+    cleanup();
+  });
+
   it("renders errors safely and rejects incompatible hosts", async () => {
     expect(() => activate({ apiVersion: "2" })).toThrow(/host API 1/);
-    const { container, cleanup } = await mount({ error: "Access denied" });
-    expect(container.textContent).toContain("Memory could not be read");
+    const { container, cleanup } = await mount({ userError: "Access denied", projectError: "Access denied" });
+    expect(container.textContent).toContain("Could not read /home/agent/.openhands/memory/MEMORY.md");
     expect(container.textContent).toContain("Access denied");
     cleanup();
   });

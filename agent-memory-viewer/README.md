@@ -6,6 +6,24 @@ The App uses existing Agent Server read APIs plus fixed read-only discovery and 
 
 Install from the absolute package path. New installations remain disabled until explicitly enabled in Agent Canvas.
 
+## Verify
+
+```sh
+npm run check --prefix agent-memory-viewer
+node /Users/devinvinson/.openhands/cache/skills/public-skills/skills/canvas-extension-api/scripts/validate-extension.mjs agent-memory-viewer
+```
+
+`npm run check` runs the unit tests, confirms that `extension.js` is the single self-contained entrypoint, and imports that entrypoint from a Blob URL in a headless browser.
+
+## Local Canvas acceptance checklist
+
+1. Run the verification commands above.
+2. Install the App from its absolute local package path; confirm it is initially disabled.
+3. Enable the trusted App, open **Memory**, and verify user/project indexes, daily notes, and **Refresh**.
+4. Reload Agent Canvas and verify the App still renders current file contents.
+5. Disable, then re-enable the App and verify the page mounts and cleans up normally.
+
+
 ## Agent Server access and security notes
 
 The App only talks to the Agent Server through `host.agentServer.request()`:

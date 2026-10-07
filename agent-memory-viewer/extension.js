@@ -16,8 +16,7 @@ const STYLE = [
   ".agent-memory__summary{display:grid;grid-template-columns:minmax(12rem,1fr) 2fr;gap:1rem;margin:1.5rem 0}",
   ".agent-memory__card,.agent-memory__entry,.agent-memory__state{border:1px solid var(--border);border-radius:.65rem;background:var(--panel)}.agent-memory__card{padding:1rem}",
   ".agent-memory__label{color:var(--muted);font-size:.69rem;font-weight:750;letter-spacing:.1em;text-transform:uppercase}.agent-memory__number{display:block;margin-top:.35rem;font-size:1.5rem;font-variant-numeric:tabular-nums}",
-  ".agent-memory__bar{height:.5rem;margin:.65rem 0 .4rem;border-radius:999px;overflow:hidden;background:var(--bg)}.agent-memory__bar span{display:block;height:100%;background:var(--accent)}",
-  ".agent-memory__entries{display:grid;gap:.8rem}.agent-memory__entry{overflow:hidden}.agent-memory__entry-header{display:flex;justify-content:space-between;gap:1rem;padding:.85rem 1rem;border-bottom:1px solid var(--border);align-items:start}",
+  ".agent-memory__entries{display:grid;gap:.8rem}.agent-memory__entry{overflow:hidden}.agent-memory__entry--error{border-color:var(--danger)}.agent-memory__entry-header{display:flex;justify-content:space-between;gap:1rem;padding:.85rem 1rem;border-bottom:1px solid var(--border);align-items:start}",
   ".agent-memory__provenance{display:flex;align-items:center;gap:.45rem;min-width:0;font-size:.8rem;font-weight:700}.agent-memory__tier{padding:.15rem .38rem;border:1px solid var(--border);border-radius:999px;color:var(--accent);font-size:.64rem;text-transform:uppercase;letter-spacing:.07em}.agent-memory__tier--project{color:#5eead4}",
   ".agent-memory__path{overflow-wrap:anywhere;color:var(--muted);font:.72rem ui-monospace,SFMono-Regular,Menlo,monospace}.agent-memory__time{flex:none;color:var(--muted);font-size:.73rem}.agent-memory__time::after{display:inline-block;margin-left:.35rem;content:'\\25B8';transition:transform .15s}.agent-memory__entry[open] .agent-memory__time::after{transform:rotate(90deg)}.agent-memory__injected{max-width:26rem;margin:0 0 .4rem;color:var(--muted);font-size:.72rem;line-height:1.5}",
   ".agent-memory__entry summary{list-style:none}.agent-memory__entry summary::-webkit-details-marker{display:none}.agent-memory__entry-header{cursor:pointer}.agent-memory__entry-header:focus-visible{outline:2px solid var(--accent);outline-offset:2px}",
@@ -41,7 +40,7 @@ function metadataCommand(paths) {
 }
 function dailyFilesCommand(directories) {
   const encoded = encodeJson(directories);
-  return `python3 -c "import base64,json,os,re; dirs=json.loads(base64.b64decode('${encoded}')); pattern=re.compile(r'^\\d{4}-\\d{2}-\\d{2}\\.md$'); print(json.dumps({d: sorted([f for f in os.listdir(d) if pattern.match(f)], reverse=True) if os.path.isdir(d) else [] for d in dirs}))"`;
+  return `python3 -c "import base64,json,os,re; dirs=json.loads(base64.b64decode('${encoded}')); pattern=re.compile(r'^\\d{4}-\\d{2}-\\d{2}\\.md$'); exec('def files(directory):\\n try:\\n  return sorted([name for name in os.listdir(directory) if pattern.match(name)], reverse=True) if os.path.isdir(directory) else []\\n except OSError:\\n  return []'); print(json.dumps({directory: files(directory) for directory in dirs}))"`;
 }
 function commandOutput(response) { const value = record(response); return typeof value?.stdout === "string" ? value.stdout.trim() : ""; }
 function truncateTop(body, budget) {
@@ -120,17 +119,24 @@ async function readMemory(request) {
     { ...root, kind: "index", path: `${root.dir}/${INDEX_FILE}` },
     ...(dailyFiles[root.dir] || []).map((file) => ({ ...root, kind: "daily", date: file.slice(0, -3), path: `${root.dir}/${file}` })),
   ]);
-  const entries = await Promise.all(sources.map(async (source) => {
-    try { const response = await request({ path: `/api/file/download?path=${encodeURIComponent(source.path)}` }); const content = text(response); return content ? { ...source, content, modifiedAt: modified(response) } : null; }
-    catch (error) { if (isNotFound(error)) return null; throw error; }
+  const results = await Promise.all(sources.map(async (source) => {
+    try {
+      const response = await request({ path: `/api/file/download?path=${encodeURIComponent(source.path)}&_=${Date.now()}`, headers: { "Cache-Control": "no-cache" } });
+      const content = text(response);
+      return content ? { entry: { ...source, content, modifiedAt: modified(response) } } : {};
+    } catch (error) {
+      if (isNotFound(error)) return {};
+      return { error: { source, message: error instanceof Error ? error.message : "Unexpected error." } };
+    }
   }));
-  const existing = entries.filter(Boolean);
+  const existing = results.flatMap((result) => result.entry ? [result.entry] : []);
+  const errors = results.flatMap((result) => result.error ? [result.error] : []);
   try {
     const result = await request({ path: "/api/bash/execute_bash_command", method: "POST", body: { command: metadataCommand(existing.map((entry) => entry.path)) } });
     const times = JSON.parse(commandOutput(result));
     for (const entry of existing) entry.modifiedAt ||= typeof times[entry.path] === "number" ? new Date(times[entry.path] * 1000).toISOString() : null;
   } catch { /* The viewer remains usable when the optional metadata probe is unavailable. */ }
-  return { enabled: true, entries: existing };
+  return { enabled: true, entries: existing, errors };
 }
 function stateBox(title, message, error = false) { const box = element("section", `agent-memory__state${error ? " agent-memory__state--error" : ""}`); box.append(element("h2", "", title), element("p", "", message)); return box; }
 function entrySummary(entry, userIndex) {
@@ -139,7 +145,14 @@ function entrySummary(entry, userIndex) {
 }
 function appendBadges(provenance, entry, userIndex) {
   if (entry.kind === "daily") return void provenance.append(element("code", "agent-memory__badge", "daily note"));
-  if (entry.tier === "project") provenance.append(element("code", "agent-memory__badge", `injected ${injectedContext(userIndex, entry.content).length.toLocaleString()} chars`));
+  if (entry.tier === "project") provenance.append(element("code", "agent-memory__badge", `≈ simulated injected size ${injectedContext(userIndex, entry.content).length.toLocaleString()} chars`));
+}
+function sourceError(error) {
+  const details = element("details", "agent-memory__entry agent-memory__entry--error");
+  const summary = element("summary", "agent-memory__entry-header");
+  summary.append(element("div", "agent-memory__provenance", `Could not read ${error.source.path}`), element("span", "agent-memory__time", "Read error"));
+  details.append(summary, element("p", "agent-memory__injected", error.message));
+  return details;
 }
 function render(root, state, refresh) {
   root.replaceChildren(); const wrap = element("section", "agent-memory__wrap"); root.append(wrap);
@@ -147,7 +160,7 @@ function render(root, state, refresh) {
   if (state.kind === "loading") return void wrap.append(stateBox("Loading memory", "Checking the memory setting and registered workspaces."));
   if (state.kind === "error") return void wrap.append(stateBox("Memory could not be read", state.message, true));
   if (!state.enabled) return void wrap.append(stateBox("Memory is disabled", "Enable Agent Memory in Settings to load user and project memory into new conversations. This viewer cannot change the setting or write memory."));
-  if (!state.entries.length) return void wrap.append(stateBox("No memory entries yet", "Memory is enabled, but no non-empty MEMORY.md index or YYYY-MM-DD.md daily note was found in the user tier or any registered workspace."));
+  if (!state.entries.length && !(state.errors || []).length) return void wrap.append(stateBox("No memory entries yet", "Memory is enabled, but no non-empty MEMORY.md index or YYYY-MM-DD.md daily note was found in the user tier or any registered workspace."));
   const userIndex = state.entries.find((entry) => entry.tier === "user" && entry.kind === "index")?.content || "";
   const sources = element("div", "agent-memory__card"); sources.append(element("div", "agent-memory__label", "Loaded sources"), element("strong", "agent-memory__number", String(state.entries.length)), element("div", "agent-memory__meta", "Discovered automatically from memory directories, registered workspaces, and conversations.")); wrap.append(sources);
   const entries = element("div", "agent-memory__entries");
@@ -161,6 +174,7 @@ function render(root, state, refresh) {
     details.append(summary, element("p", "agent-memory__injected", entrySummary(entry, userIndex)), element("pre", "", entry.content));
     entries.append(details);
   }
+  for (const error of state.errors || []) entries.append(sourceError(error));
   wrap.append(entries);
 }
 export function activate(host) {
