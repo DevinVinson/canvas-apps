@@ -118,19 +118,29 @@ export function startPayload(settings, workspace, prompt, title) {
   if (!prompt.trim()) throw new Error("Give your agent a task first.");
   const agent = { ...settings.agent_settings };
   delete agent.schema_version;
-  agent.tools = agent.tools?.length
-    ? agent.tools
-    : [
-        { name: "terminal", params: {} },
-        { name: "file_editor", params: {} },
-        { name: "task_tracker", params: {} },
-      ];
+  // Match ConversationSettings' creation semantics. Unknown settings require
+  // approvals rather than inheriting StartConversationRequest's NeverConfirm.
+  const conversation = settings.conversation_settings ?? {};
+  const analyzer = String(conversation.security_analyzer ?? "").toLowerCase();
+  const confirmationPolicy =
+    conversation.confirmation_mode === false
+      ? "NeverConfirm"
+      : conversation.confirmation_mode === true && analyzer === "llm"
+        ? "ConfirmRisky"
+        : "AlwaysConfirm";
   const payload = {
     workspace: { kind: "LocalWorkspace", working_dir: workspace.trim() },
     worktree: false,
     agent_settings: agent,
     secrets_encrypted: true,
-    max_iterations: 100,
+    max_iterations:
+      Number.isInteger(conversation.max_iterations) &&
+      conversation.max_iterations > 0
+        ? conversation.max_iterations
+        : 500,
+    confirmation_policy: { kind: confirmationPolicy },
+    security_analyzer:
+      analyzer === "llm" ? { kind: "LLMSecurityAnalyzer" } : null,
     stuck_detection: true,
     autotitle: false,
     tags: { pixeloffice: "true" },
@@ -140,8 +150,5 @@ export function startPayload(settings, workspace, prompt, title) {
       run: true,
     },
   };
-  if (settings.conversation_settings?.confirmation_policy)
-    payload.confirmation_policy =
-      settings.conversation_settings.confirmation_policy;
   return payload;
 }

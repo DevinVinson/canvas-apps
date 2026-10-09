@@ -66,7 +66,7 @@ test("encrypted settings round trip without modifying the original settings", ()
   assert.equal(body.agent_settings.llm.api_key, "encrypted-test");
   assert.equal(body.agent_settings.schema_version, undefined);
   assert.equal(settings.agent_settings.schema_version, 1);
-  assert.equal(body.agent_settings.tools.length, 3);
+  assert.equal(body.agent_settings.tools.length, 0);
   assert.equal(settings.agent_settings.tools.length, 0);
   assert.throws(
     () => startPayload(settings, "relative", "hello", "Pip"),
@@ -103,4 +103,52 @@ test("tool results render typed content and file view actions animate as reading
     ]).label,
     "Reading",
   );
+});
+
+test("new agents preserve real Canvas confirmation settings and iteration limits", () => {
+  for (const [confirmation_mode, security_analyzer, expected] of [
+    [false, "none", "NeverConfirm"],
+    [false, "llm", "NeverConfirm"],
+    [true, "llm", "ConfirmRisky"],
+    [true, "none", "AlwaysConfirm"],
+    [true, null, "AlwaysConfirm"],
+    [undefined, "llm", "AlwaysConfirm"],
+  ]) {
+    const settings = {
+      agent_settings: { tools: null },
+      conversation_settings: {
+        schema_version: 1,
+        max_iterations: 73,
+        confirmation_mode,
+        security_analyzer,
+      },
+    };
+    const payload = startPayload(settings, "/tmp/test", "Check the code", "");
+    assert.deepEqual(payload.confirmation_policy, { kind: expected });
+    assert.deepEqual(
+      payload.security_analyzer,
+      security_analyzer === "llm" ? { kind: "LLMSecurityAnalyzer" } : null,
+    );
+    assert.equal(payload.max_iterations, 73);
+    assert.equal(payload.agent_settings.tools, null);
+  }
+  const unknown = startPayload(
+    { agent_settings: {} },
+    "/tmp/test",
+    "Check",
+    "",
+  );
+  assert.deepEqual(unknown.confirmation_policy, { kind: "AlwaysConfirm" });
+  assert.equal(unknown.max_iterations, 500);
+});
+
+test("new agents preserve configured, default, and explicitly disabled tools", () => {
+  for (const tools of [null, [], [{ name: "file_editor", params: {} }]]) {
+    const settings = { agent_settings: { tools } };
+    assert.deepEqual(
+      startPayload(settings, "/tmp/test", "Check", "").agent_settings.tools,
+      tools,
+    );
+    assert.deepEqual(settings.agent_settings.tools, tools);
+  }
 });

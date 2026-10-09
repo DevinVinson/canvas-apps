@@ -25,7 +25,7 @@ export async function sendTask(request, id, text) {
     if (
       error?.status === 429 ||
       error?.response?.status === 429 ||
-      /message saved.*capacity|run capacity is full/i.test(
+      /message saved|conversation run limit was reached|run capacity is full/i.test(
         String(error?.message ?? error),
       )
     )

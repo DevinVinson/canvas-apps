@@ -99,3 +99,19 @@ test("rename failure returns the created conversation, not a retryable creation 
     1,
   );
 });
+
+test("capacity errors match the server's actual detail without a status property", async () => {
+  const detail =
+    "Message saved, but the conversation run limit was reached. Retry POST /api/conversations/agent/run without resending the message.";
+  const calls = [];
+  const request = async (r) => {
+    calls.push(r);
+    if (!r.method) return { confirmation_policy: { kind: "NeverConfirm" } };
+    throw new Error(JSON.stringify({ detail }));
+  };
+  assert.deepEqual(await sendTask(request, "agent", "hello"), {
+    run: false,
+    capacity: true,
+  });
+  assert.equal(calls.filter((r) => r.method === "POST").length, 1);
+});

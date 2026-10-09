@@ -13,7 +13,7 @@ For local development, install this directory's absolute path. A remote backend 
 - **Office view** fills the page. **Agents** and **Agent desk** open floating panels; close them with × or Escape. **Split view** restores the three-column layout. View preferences persist per backend.
 - Click a character or roster entry to see conversation messages, actual tool calls/results, workspace, model, and accumulated spend.
 - Send a follow-up from the desk. Conversations explicitly using `NeverConfirm` resume automatically. For approval-enabled or unknown policies, messages are saved without running; **Review & continue** opens the full conversation for approvals. The app rechecks backend policy before sending or resuming.
-- **New agent** uses the selected backend's current settings and an absolute workspace path on that backend. Encrypted settings are forwarded without storing model credentials. Configured tools are preserved; terminal, file editor, and task tracker are supplied when the tool list is empty.
+- **New agent** uses the selected backend's current settings and an absolute workspace path on that backend. Encrypted settings are forwarded without storing model credentials. Confirmation mode, security analyzer, iteration limit, and configured tools are preserved, including an explicitly empty tool list. Missing confirmation settings require approvals.
 - Pause an agent or open its full conversation. Pausing the office animation does not pause agents.
 - Add existing conversations through **All conversations** and `+`. **Remove from office** hides the character and does not delete the conversation.
 - Zoom or fit the room. The office uses the available host height and gives the scene more room when panels are tucked away.
