@@ -12,8 +12,8 @@ info:
   description: |
     Bidirectional WebSocket protocol between the Pixel Agents server and any UI client
     (the bundled VS Code webview, the standalone browser SPA, or future third-party
-    clients). The server watches AI-coding-agent transcripts, parses tool activity, 
-    owns office layout, and streams events to all connected clients. 
+    clients). The server watches AI-coding-agent transcripts, parses tool activity,
+    owns office layout, and streams events to all connected clients.
     Clients send commands to launch agents, save layout, and toggle settings.
 
     The protocol is provider-agnostic: a HookProvider implementation defines how raw
