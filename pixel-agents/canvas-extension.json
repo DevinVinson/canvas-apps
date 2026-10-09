@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "name": "pixel-agents",
+  "display_name": "Pixel Agents",
+  "version": "0.1.0",
+  "description": "A living pixel office for your OpenHands conversations. Watch real work, select an agent, and give it a task.",
+  "entrypoint": "extension.js",
+  "contributes": {
+    "pages": [
+      {
+        "id": "office",
+        "title": "Pixel Agents",
+        "path": "/office",
+        "nav_label": "Pixel Office",
+        "description": "Watch and interact with your OpenHands agents."
+      }
+    ]
+  }
+}
